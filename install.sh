@@ -471,11 +471,10 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 running() { systemctl is-active --quiet "$SERVICE"; }
-cursor()  { journalctl -n 0 --show-cursor -q 2>/dev/null | sed -n 's/^-- cursor: //p'; }
-since()   {
-    if [ -n "$1" ]; then journalctl -u "$SERVICE" --after-cursor="$1" -o cat --no-pager -q
-    else journalctl -u "$SERVICE" -n 20 -o cat --no-pager -q; fi
-}
+# A timestamp to read the log from ("--after-cursor" combined with -u is unreliable
+# on older systemd).
+cursor()  { date +%s.%N; }
+since()   { journalctl -u "$SERVICE" --since "@$1" -o cat --no-pager -q; }
 send() {
     running || die "server is not running (start it with: mcserver start)"
     [ -p "$FIFO" ] || die "console pipe $FIFO is missing"
@@ -722,7 +721,7 @@ else
 fi
 
 if [ $START -eq 1 ]; then
-    cur=$(journalctl -n 0 --show-cursor -q 2>/dev/null | sed -n 's/^-- cursor: //p')
+    cur=$(date +%s.%N)
     if [ $was_running -eq 1 ]; then
         say "Restarting server to apply changes"
         systemctl restart "$SERVICE"
@@ -732,7 +731,7 @@ if [ $START -eq 1 ]; then
     fi
     ok=0
     for _ in $(seq 1 240); do
-        log=$(journalctl -u "$SERVICE" ${cur:+--after-cursor="$cur"} -o cat --no-pager -q 2>/dev/null || true)
+        log=$(journalctl -u "$SERVICE" --since "@$cur" -o cat --no-pager -q 2>/dev/null || true)
         if grep -q 'Done (' <<< "$log"; then ok=1; break; fi
         if grep -q -e 'FAILED TO BIND' -e 'Exception' <<< "$log" || ! systemctl is-active --quiet "$SERVICE"; then break; fi
         sleep 0.5
