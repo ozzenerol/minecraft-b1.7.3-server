@@ -157,7 +157,8 @@ fi
 # --- packages -----------------------------------------------------------------
 java_major() {
     local v
-    v=$(java -version 2>&1 | awk -F'"' '/version/ {print $2; exit}') || return 1
+    v=$(java -version 2>&1) || return 1
+    v=$(awk -F'"' '/version/ {print $2; exit}' <<< "$v")
     [ -n "$v" ] || return 1
     case "$v" in 1.*) v=${v#1.} ;; esac
     echo "${v%%[.+-]*}"
@@ -184,7 +185,7 @@ install_packages() {
         if [ $need_java -eq 1 ]; then
             local p
             for p in openjdk-17-jre-headless openjdk-21-jre-headless openjdk-25-jre-headless default-jre-headless; do
-                if apt-cache policy "$p" 2>/dev/null | grep -q 'Candidate: [0-9]'; then
+                if grep -q 'Candidate: [0-9]' <<< "$(apt-cache policy "$p" 2>/dev/null)"; then
                     want+=("$p"); break
                 fi
             done
@@ -483,7 +484,7 @@ send() {
 wait_for() {  # cursor pattern seconds
     local i=0
     while [ $i -lt $(($3 * 4)) ]; do
-        since "$1" | grep -q -- "$2" && return 0
+        grep -q -- "$2" <<< "$(since "$1")" && return 0
         sleep 0.25; i=$((i + 1))
     done
     return 1
@@ -762,7 +763,7 @@ if [ "$(awk -F= '$1 == "online-mode" {print $2}' "$DIR/server.properties")" != t
     echo "  reachable from the internet, turn the whitelist on: mcserver whitelist on"
     echo
 fi
-if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q 'Status: active'; then
+if command -v ufw >/dev/null 2>&1 && grep -q 'Status: active' <<< "$(ufw status 2>/dev/null)"; then
     echo "  ufw is active - open the port with: ufw allow $port/tcp"
     echo
 fi
