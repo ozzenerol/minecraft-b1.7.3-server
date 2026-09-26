@@ -1,3 +1,14 @@
+<p align="center">
+  <img src="assets/banner.svg" alt="Beta 1.7.3 Server Installer" width="100%">
+</p>
+
+<p align="center">
+  <img alt="Minecraft Beta 1.7.3" src="https://img.shields.io/badge/Minecraft-Beta%201.7.3-5d9e34?style=for-the-badge">
+  <img alt="systemd" src="https://img.shields.io/badge/systemd-service-866043?style=for-the-badge">
+  <img alt="Bash" src="https://img.shields.io/badge/one%20script-bash-4f4f4f?style=for-the-badge&logo=gnubash&logoColor=white">
+  <img alt="MIT license" src="https://img.shields.io/badge/license-MIT-6894de?style=for-the-badge">
+</p>
+
 # Minecraft Beta 1.7.3 server installer
 
 One script that sets up a **Minecraft Beta 1.7.3** server on Linux, the last version
@@ -24,6 +35,8 @@ less install.sh
 sudo bash install.sh --help
 ```
 
+<img src="assets/divider.svg" alt="" width="100%">
+
 ## What it does
 
 - Installs Java if it isn't there. It uses apt, dnf, pacman or zypper and prefers OpenJDK 17.
@@ -43,6 +56,8 @@ from Beta 1.5), it upgrades that world in place.
 
 **Requirements:** a Linux machine with systemd (Debian, Ubuntu, Fedora, Arch, openSUSE, and
 Proxmox LXC containers are fine), root access and about 1 GB of RAM.
+
+<img src="assets/divider.svg" alt="" width="100%">
 
 ## Using `mcserver`
 
@@ -69,6 +84,8 @@ mcserver restore world-20250101-040000.tar.gz   # the current world is moved asi
 
 Commands that need root run `sudo` for you.
 
+<img src="assets/divider.svg" alt="" width="100%">
+
 ## Installer options
 
 | Option | Default | |
@@ -91,6 +108,8 @@ Commands that need root run `sudo` for you.
 | `--no-start` | | install without starting |
 | `--force` | | replace a `minecraft.service` that this script didn't create |
 
+<img src="assets/divider.svg" alt="" width="100%">
+
 ## Connecting
 
 Players need the **b1.7.3** client. In [Prism Launcher](https://prismlauncher.org),
@@ -106,6 +125,8 @@ On a LAN that's fine. If you forward the port to the internet, turn on the white
 a whitelisted name can use it. For real authentication, use an auth plugin with a modded
 server such as Project Poseidon.
 
+<img src="assets/divider.svg" alt="" width="100%">
+
 ## Uninstall
 
 ```sh
@@ -114,6 +135,8 @@ sudo mcserver uninstall --purge    # also deletes /opt/minecraft, backups and th
 ```
 
 (`sudo bash install.sh --uninstall [--purge]` does the same thing.) Java is left installed.
+
+<img src="assets/divider.svg" alt="" width="100%">
 
 ## Files
 
@@ -125,7 +148,13 @@ sudo mcserver uninstall --purge    # also deletes /opt/minecraft, backups and th
 | `/etc/systemd/system/minecraft*.{service,socket,timer}` | units |
 | `/run/minecraft.stdin` | console pipe (exists while the server runs) |
 
+<img src="assets/divider.svg" alt="" width="100%">
+
 ## License
 
-MIT for the scripts in this repo. Minecraft and its server software belong to
+MIT for the scripts and the pixel-art banners in this repo (original artwork, regenerate with `python3 assets/make-banners.py`). This is an unofficial project, not affiliated with Mojang or Microsoft. Minecraft and its server software belong to
 Mojang/Microsoft, and this project only downloads the original jar.
+
+<p align="center">
+  <img src="assets/footer.svg" alt="No hunger bar, just blocks" width="100%">
+</p>
