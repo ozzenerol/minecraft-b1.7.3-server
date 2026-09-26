@@ -604,7 +604,8 @@ restore() {
     lvl=$(level)
     g=$(id -gn "$RUN_USER")
     tmp=$(mktemp -d -p "$DIR" .restore.XXXXXX)
-    trap 'rm -rf "$tmp"' EXIT
+    # shellcheck disable=SC2064  # expand now: $tmp is local and gone by EXIT
+    trap "rm -rf '$tmp'" EXIT
     tar xzf "$f" -C "$tmp"
     src=$(find "$tmp" -maxdepth 2 -name level.dat -printf '%h\n' | head -1)
     [ -n "$src" ] || die "$f doesn't contain a world (no level.dat)"
@@ -625,7 +626,8 @@ console() {
     echo "Attached to the server console. Type commands (no slash). Ctrl-D or 'exit' detaches; 'stop' shuts the server down."
     journalctl -u "$SERVICE" -o cat -n 15 -f &
     local jp=$!
-    trap 'kill $jp 2>/dev/null' EXIT
+    # shellcheck disable=SC2064
+    trap "kill $jp 2>/dev/null" EXIT
     trap 'echo; exit 0' INT
     local line
     while IFS= read -r -e line; do
