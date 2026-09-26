@@ -471,6 +471,9 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 running() { systemctl is-active --quiet "$SERVICE"; }
+# Stopping the socket too avoids systemd's "can still be activated" warning;
+# starting the service brings it back.
+stop_server() { systemctl stop "$SERVICE.service" "$SERVICE.socket"; }
 # A timestamp to read the log from ("--after-cursor" combined with -u is unreliable
 # on older systemd).
 cursor()  { date +%s.%N; }
@@ -609,7 +612,7 @@ restore() {
     tar xzf "$f" -C "$tmp"
     src=$(find "$tmp" -maxdepth 2 -name level.dat -printf '%h\n' | head -1)
     [ -n "$src" ] || die "$f doesn't contain a world (no level.dat)"
-    if running; then was_running=1; echo "Stopping server..."; systemctl stop "$SERVICE"; fi
+    if running; then was_running=1; echo "Stopping server..."; stop_server; fi
     ts=$(date +%Y%m%d-%H%M%S)
     if [ -d "$DIR/$lvl" ]; then
         mv "$DIR/$lvl" "$DIR/$lvl.before-restore-$ts"
@@ -634,6 +637,7 @@ console() {
         [ "$line" = exit ] && break
         [ -n "$line" ] && send "$line"
     done
+    sleep 1  # let the last reply reach the screen
 }
 
 logs() {
@@ -677,7 +681,9 @@ uninstall() {
 sub=$1; shift
 case "$sub" in
     status)                 status ;;
-    start|stop|restart)     systemctl "$sub" "$SERVICE"; [ "$sub" = stop ] || echo "Server ${sub}ed. Watch it boot with: mcserver logs -f" ;;
+    start)                  systemctl start "$SERVICE"; echo "Server started. Watch it boot with: mcserver logs -f" ;;
+    stop)                   stop_server; echo "Server stopped." ;;
+    restart)                stop_server; systemctl start "$SERVICE"; echo "Server restarted. Watch it boot with: mcserver logs -f" ;;
     enable|disable)         systemctl "$sub" "$SERVICE" ;;
     logs|log)               logs "$@" ;;
     cmd)                    cmd "$@" ;;
