@@ -9,7 +9,7 @@
 # Run with --help for all options.
 set -euo pipefail
 
-SCRIPT_VERSION=1.0.0
+SCRIPT_VERSION=1.1.0
 JAR_URL=https://files.betacraft.uk/server-archive/beta/b1.7.3.jar
 JAR_SHA1=2f90dc1cb5ca7e9d71786801b307390a67fcf954
 JAR_NAME=server-b1.7.3.jar
@@ -30,6 +30,7 @@ START=1
 FORCE=0
 MODE=install
 declare -A PROPS=()
+declare -A SET=()
 OPS=()
 UNINSTALL_ARGS=()
 
@@ -87,10 +88,10 @@ need_arg() { [ $# -ge 2 ] && [ -n "$2" ] || die "$1 needs a value"; }
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --dir)          need_arg "$@"; DIR=${2%/}; shift ;;
-        --user)         need_arg "$@"; RUN_USER=$2; shift ;;
-        --memory)       need_arg "$@"; XMX=$2; shift ;;
-        --min-memory)   need_arg "$@"; XMS=$2; shift ;;
+        --dir)          need_arg "$@"; DIR=${2%/}; SET[DIR]=1; shift ;;
+        --user)         need_arg "$@"; RUN_USER=$2; SET[RUN_USER]=1; shift ;;
+        --memory)       need_arg "$@"; XMX=$2; SET[XMX]=1; shift ;;
+        --min-memory)   need_arg "$@"; XMS=$2; SET[XMS]=1; shift ;;
         --port)         need_arg "$@"; PROPS[server-port]=$2; shift ;;
         --max-players)  need_arg "$@"; PROPS[max-players]=$2; shift ;;
         --seed)         need_arg "$@"; PROPS[level-seed]=$2; shift ;;
@@ -98,9 +99,9 @@ while [ $# -gt 0 ]; do
         --online-mode)  need_arg "$@"; PROPS[online-mode]=$(onoff "$1" "$2"); shift ;;
         --pvp)          need_arg "$@"; PROPS[pvp]=$(onoff "$1" "$2"); shift ;;
         --op)           need_arg "$@"; OPS+=("$2"); shift ;;
-        --backup-dir)   need_arg "$@"; BACKUP_DIR=${2%/}; shift ;;
-        --backup-keep)  need_arg "$@"; BACKUP_KEEP=$2; shift ;;
-        --backup-time)  need_arg "$@"; BACKUP_TIME=$2; shift ;;
+        --backup-dir)   need_arg "$@"; BACKUP_DIR=${2%/}; SET[BACKUP_DIR]=1; shift ;;
+        --backup-keep)  need_arg "$@"; BACKUP_KEEP=$2; SET[BACKUP_KEEP]=1; shift ;;
+        --backup-time)  need_arg "$@"; BACKUP_TIME=$2; SET[BACKUP_TIME]=1; shift ;;
         --jar-url)      need_arg "$@"; JAR_URL=$2; shift ;;
         --no-start)     START=0 ;;
         --force)        FORCE=1 ;;
@@ -121,6 +122,33 @@ if [ "$MODE" = uninstall ]; then
 fi
 [ ${#UNINSTALL_ARGS[@]} -eq 0 ] || die "--purge and --yes only make sense with --uninstall"
 
+# On a re-run, settings that weren't passed keep their installed values.
+conf_get() { ( set +u; unset "$1"; . "$CONF" >/dev/null 2>&1; printf '%s' "${!1}" ); }
+if [ -r "$CONF" ]; then
+    for k in DIR RUN_USER BACKUP_DIR BACKUP_KEEP BACKUP_TIME XMX XMS; do
+        [ -n "${SET[$k]:-}" ] && continue
+        v=$(conf_get "$k")
+        [ -n "$v" ] && printf -v "$k" '%s' "$v"
+    done
+    # Installs from v1.0.0 didn't store these in the conf: read them from the units.
+    if [ -z "$(conf_get XMX)" ] && [ -z "${SET[XMX]:-}" ] && [ -r "$UNIT_DIR/$SERVICE.service" ]; then
+        v=$(sed -n 's/^ExecStart=.* -Xmx\([0-9]*[KkMmGg]\) .*/\1/p' "$UNIT_DIR/$SERVICE.service")
+        [ -n "$v" ] && XMX=$v
+    fi
+    if [ -z "$(conf_get XMS)" ] && [ -z "${SET[XMS]:-}" ] && [ -r "$UNIT_DIR/$SERVICE.service" ]; then
+        v=$(sed -n 's/^ExecStart=.* -Xms\([0-9]*[KkMmGg]\) .*/\1/p' "$UNIT_DIR/$SERVICE.service")
+        [ -n "$v" ] && XMS=$v
+    fi
+    if [ -z "$(conf_get BACKUP_TIME)" ] && [ -z "${SET[BACKUP_TIME]:-}" ] && [ -r "$UNIT_DIR/$SERVICE-backup.timer" ]; then
+        if systemctl is-enabled --quiet "$SERVICE-backup.timer" 2>/dev/null; then
+            v=$(sed -n 's/^OnCalendar=//p' "$UNIT_DIR/$SERVICE-backup.timer")
+            [ -n "$v" ] && BACKUP_TIME=$v
+        else
+            BACKUP_TIME=off
+        fi
+    fi
+fi
+
 # --- validation ---------------------------------------------------------------
 size_re='^[0-9]+[KkMmGg]$'
 [[ -z $XMX || $XMX =~ $size_re ]] || die "--memory must look like 768M or 2G"
@@ -140,10 +168,43 @@ fi
 for name in "${OPS[@]}"; do
     [[ $name =~ ^[A-Za-z0-9_]{1,16}$ ]] || die "invalid player name: $name"
 done
+[[ ${PROPS[level-seed]:-} != *[[:cntrl:]]* ]] || die "--seed must not contain control characters"
+# The directories get chowned (and the backup dir chmod 700, and both are deleted
+# by --purge), so refuse system directories and top-level paths like /srv or /home.
+safe_dir() {  # option path
+    local p=$2
+    [[ $p != *[[:cntrl:]]* && $p != *[[:space:]]* ]] || die "$1 must not contain spaces"
+    case "$p/" in
+        */../*|*/./*) die "$1 must not contain . or .. components" ;;
+    esac
+    [[ $p =~ ^/[^/]+/.+ ]] || die "$1 must be at least two levels deep, e.g. /opt/minecraft (got $p)"
+    case "$p/" in
+        /etc/*|/usr/*|/bin/*|/sbin/*|/lib/*|/lib32/*|/lib64/*|/libx32/*|/boot/*|/dev/*|/proc/*|/sys/*|/run/*|/root/*)
+            die "$1 must not be inside a system directory (got $p)" ;;
+    esac
+}
+safe_dir --dir "$DIR"
+safe_dir --backup-dir "$BACKUP_DIR"
+[ "$DIR" != "$BACKUP_DIR" ] || die "--dir and --backup-dir must be different"
 
 if [ -e "$UNIT_DIR/$SERVICE.service" ] && ! grep -qF "$MARKER" "$UNIT_DIR/$SERVICE.service" && [ $FORCE -eq 0 ]; then
     die "$UNIT_DIR/$SERVICE.service already exists and wasn't created by this script.
        Stop and remove it first, or re-run with --force to replace it (your world in --dir is kept)."
+fi
+# One server per machine: installing again with another --dir or --user would
+# silently point the service and mcserver away from the existing world.
+if [ -r "$CONF" ] && [ $FORCE -eq 0 ]; then
+    old_dir=$(conf_get DIR)
+    old_user=$(conf_get RUN_USER)
+    old_bk=$(conf_get BACKUP_DIR)
+    for v in "dir:$old_dir:$DIR" "user:$old_user:$RUN_USER" "backup-dir:$old_bk:$BACKUP_DIR"; do
+        IFS=: read -r opt old new <<< "$v"
+        if [ -n "$old" ] && [ "$old" != "$new" ]; then
+            die "a server is already installed with --$opt $old (you passed $new).
+       This script manages one server per machine. Re-run with --$opt $old to update it,
+       or uninstall it first (sudo mcserver uninstall). --force switches anyway."
+        fi
+    done
 fi
 
 if [ -z "$XMX" ]; then
@@ -262,10 +323,11 @@ fetch_jar() {
 set_prop() {  # file key value
     local f=$1 k=$2 v=$3 tmp
     tmp=$(mktemp)
-    awk -v k="$k" -v v="$v" -F= '
-        $1 == k { print k "=" v; done = 1; next }
+    # ENVIRON, not -v: awk -v would turn backslash escapes in the value into characters.
+    K=$k V=$v awk -F= '
+        $1 == ENVIRON["K"] { print ENVIRON["K"] "=" ENVIRON["V"]; done = 1; next }
         { print }
-        END { if (!done) print k "=" v }' "$f" > "$tmp"
+        END { if (!done) print ENVIRON["K"] "=" ENVIRON["V"] }' "$f" > "$tmp"
     cat "$tmp" > "$f"
     rm -f "$tmp"
 }
@@ -357,6 +419,9 @@ Restart=on-failure
 RestartSec=10
 SuccessExitStatus=0 1 143
 NoNewPrivileges=true
+# Lets the unprivileged server use ports below 1024 too.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 
 [Install]
 WantedBy=multi-user.target
@@ -387,15 +452,14 @@ EOF
 }
 
 write_conf() {
-    cat > "$CONF" <<EOF
-# Written by minecraft-b1.7.3-server install.sh v$SCRIPT_VERSION - read by $TOOL
-SERVICE=$SERVICE
-DIR=$DIR
-RUN_USER=$RUN_USER
-BACKUP_DIR=$BACKUP_DIR
-BACKUP_KEEP=$BACKUP_KEEP
-INSTALLER_VERSION=$SCRIPT_VERSION
-EOF
+    {
+        echo "# Written by minecraft-b1.7.3-server install.sh v$SCRIPT_VERSION - read by $TOOL"
+        local k
+        for k in SERVICE DIR RUN_USER BACKUP_DIR BACKUP_KEEP BACKUP_TIME XMX XMS; do
+            printf '%s=%q\n' "$k" "${!k}"
+        done
+        printf 'INSTALLER_VERSION=%q\n' "$SCRIPT_VERSION"
+    } > "$CONF"
     chmod 644 "$CONF"
 }
 
@@ -474,6 +538,35 @@ running() { systemctl is-active --quiet "$SERVICE"; }
 # Stopping the socket too avoids systemd's "can still be activated" warning;
 # starting the service brings it back.
 stop_server() { systemctl stop "$SERVICE.service" "$SERVICE.socket"; }
+port()    { local p; p=$(prop_get server-port); echo "${p:-25565}"; }
+port_busy() { command -v ss >/dev/null 2>&1 && [ -n "$(ss -Htln "sport = :$1" 2>/dev/null)" ]; }
+# Start the server and wait until it is really serving. Beta 1.7.3 keeps running
+# without listening when it can't bind its port, so watch its log for that too.
+start_server() {
+    local p pid i log
+    p=$(port)
+    if port_busy "$p"; then
+        die "port $p is already in use by another program - pick another one: mcserver prop server-port <N>"
+    fi
+    systemctl start "$SERVICE"
+    pid=$(systemctl show -p MainPID --value "$SERVICE")
+    for i in $(seq 1 360); do
+        log=$(journalctl _SYSTEMD_UNIT="$SERVICE.service" _PID="$pid" -o cat --no-pager -q 2>/dev/null || true)
+        if grep -q 'Done (' <<< "$log"; then
+            info "Server is up on port $p."
+            return 0
+        fi
+        if grep -q 'FAILED TO BIND' <<< "$log"; then
+            stop_server
+            die "the server could not open port $p ($(sed -n 's/.*The exception was: //p' <<< "$log" | head -1)) - it has been stopped"
+        fi
+        if ! systemctl is-active --quiet "$SERVICE"; then
+            die "the server exited during startup - check: mcserver logs"
+        fi
+        sleep 0.5
+    done
+    die "the server didn't report ready within 3 minutes - check: mcserver logs"
+}
 # A timestamp to read the log from ("--after-cursor" combined with -u is unreliable
 # on older systemd).
 cursor()  { date +%s.%N; }
@@ -481,6 +574,8 @@ since()   { journalctl -u "$SERVICE" --since "@$1" -o cat --no-pager -q; }
 send() {
     running || die "server is not running (start it with: mcserver start)"
     [ -p "$FIFO" ] || die "console pipe $FIFO is missing"
+    # One line per command: a newline would smuggle in a second console command.
+    [[ "$*" != *[[:cntrl:]]* ]] || die "console commands must not contain newlines or control characters"
     printf '%s\n' "$*" > "$FIFO"
 }
 wait_for() {  # cursor pattern seconds
@@ -499,7 +594,7 @@ cmd() {
     sleep "${WAIT:-1}"
     since "$c"
 }
-prop_get() { awk -F= -v k="$1" '$1 == k { sub(/^[^=]*=/, ""); print; exit }' "$DIR/server.properties"; }
+prop_get() { K=$1 awk -F= '$1 == ENVIRON["K"] { sub(/^[^=]*=/, ""); print; exit }' "$DIR/server.properties"; }
 level()    { local l; l=$(prop_get level-name); echo "${l:-world}"; }
 
 prop() {
@@ -511,11 +606,13 @@ prop() {
         *)
             local k=$1; shift
             local v="$*" tmp
+            [[ $k =~ ^[A-Za-z0-9._-]+$ ]] || die "invalid property name: $k"
+            [[ $v != *[[:cntrl:]]* ]] || die "property values must not contain newlines or control characters"
             tmp=$(mktemp)
-            awk -v k="$k" -v v="$v" -F= '
-                $1 == k { print k "=" v; done = 1; next }
+            K=$k V=$v awk -F= '
+                $1 == ENVIRON["K"] { print ENVIRON["K"] "=" ENVIRON["V"]; done = 1; next }
                 { print }
-                END { if (!done) print k "=" v }' "$f" > "$tmp"
+                END { if (!done) print ENVIRON["K"] "=" ENVIRON["V"] }' "$f" > "$tmp"
             cat "$tmp" > "$f"; rm -f "$tmp"
             echo "$k=$v"
             if running; then echo "Restart to apply: mcserver restart"; fi
@@ -562,13 +659,20 @@ backup() {
     install -d -m 700 "$BACKUP_DIR"
     ts=$(date +%Y%m%d-%H%M%S)
     out=$BACKUP_DIR/world-$ts.tar.gz
+    # Two backups in the same second (manual + timer) must not overwrite each other.
+    local n=1
+    while [ -e "$out" ] || [ -e "$out.part" ]; do out=$BACKUP_DIR/world-$ts-$n.tar.gz; n=$((n + 1)); done
     if running; then
         was_running=1
+        # save-all first: Beta 1.7.3 ignores save-all while saving is off. Then
+        # pause saving so the files don't change while tar reads them.
         c=$(cursor)
-        send save-off
         send save-all
-        trap 'running && printf "save-on\n" > "$FIFO"' EXIT
         wait_for "$c" 'Save complete' 60 || echo "mcserver: warning: no 'Save complete' from server, backing up anyway" >&2
+        c=$(cursor)
+        trap 'running && printf "save-on\n" > "$FIFO"' EXIT
+        send save-off
+        wait_for "$c" 'Disabling level saving' 10 || true
     fi
     local extra=()
     for f in server.properties ops.txt white-list.txt banned-players.txt banned-ips.txt; do
@@ -621,7 +725,7 @@ restore() {
     mv "$src" "$DIR/$lvl"
     chown -R "$RUN_USER:$g" "$DIR/$lvl"
     echo "Restored $f"
-    if [ $was_running = 1 ]; then systemctl start "$SERVICE"; echo "Server started."; fi
+    if [ $was_running = 1 ]; then start_server; fi
 }
 
 console() {
@@ -640,6 +744,24 @@ console() {
     sleep 1  # let the last reply reach the screen
 }
 
+# Beta 1.7.3 only reads white-list from server.properties at startup: "whitelist on"
+# writes the file but keeps letting everyone in until a restart. So restart for it.
+whitelist() {
+    case "${1:-}" in
+        on|off)
+            local v=true; [ "$1" = off ] && v=false
+            if running; then
+                cmd whitelist "$1" >/dev/null
+                echo "Whitelist $1. Restarting the server to apply it (players are disconnected)..."
+                stop_server; start_server
+            else
+                prop white-list $v >/dev/null
+                echo "Whitelist $1 (applies when the server starts)."
+            fi ;;
+        *) cmd whitelist "$@" ;;
+    esac
+}
+
 logs() {
     case "${1:-50}" in
         -f|--follow) exec journalctl -u "$SERVICE" -o cat -f ;;
@@ -654,7 +776,7 @@ uninstall() {
         case "$a" in --purge) purge=1 ;; --yes|-y) yes=1 ;; *) die "unknown option: $a" ;; esac
     done
     if [ $purge = 1 ] && [ $yes = 0 ]; then
-        [ -r /dev/tty ] || die "--purge deletes the world; add --yes to confirm"
+        { : < /dev/tty; } 2>/dev/null || die "--purge deletes the world; add --yes to confirm"
         printf 'This permanently deletes %s, %s and user %s. Type "delete" to continue: ' "$DIR" "$BACKUP_DIR" "$RUN_USER" > /dev/tty
         read -r a < /dev/tty
         [ "$a" = delete ] || die "aborted"
@@ -681,9 +803,9 @@ uninstall() {
 sub=$1; shift
 case "$sub" in
     status)                 status ;;
-    start)                  systemctl start "$SERVICE"; echo "Server started. Watch it boot with: mcserver logs -f" ;;
+    start)                  if running; then echo "Server is already running."; else echo "Starting server..."; start_server; fi ;;
     stop)                   stop_server; echo "Server stopped." ;;
-    restart)                stop_server; systemctl start "$SERVICE"; echo "Server restarted. Watch it boot with: mcserver logs -f" ;;
+    restart)                echo "Restarting server..."; stop_server; start_server ;;
     enable|disable)         systemctl "$sub" "$SERVICE" ;;
     logs|log)               logs "$@" ;;
     cmd)                    cmd "$@" ;;
@@ -692,7 +814,8 @@ case "$sub" in
     say)                    [ $# -gt 0 ] || die "usage: mcserver say <message>"; cmd say "$@" ;;
     op|deop|kick|ban|pardon|ban-ip|pardon-ip)
                             [ $# -eq 1 ] || die "usage: mcserver $sub <name>"; cmd "$sub" "$1" ;;
-    whitelist|tp|give|time) cmd "$sub" "$@" ;;
+    whitelist)              whitelist "$@" ;;
+    tp|give|time)           cmd "$sub" "$@" ;;
     save)                   WAIT=2 cmd save-all ;;
     prop|props)             prop "$@" ;;
     backup)                 backup "$@" ;;
@@ -728,27 +851,16 @@ else
     say "Automatic backups: $BACKUP_TIME, keeping $BACKUP_KEEP"
 fi
 
+start_failed=0
 if [ $START -eq 1 ]; then
-    cur=$(date +%s.%N)
     if [ $was_running -eq 1 ]; then
         say "Restarting server to apply changes"
-        systemctl restart "$SERVICE"
+        "$TOOL" restart >/dev/null || start_failed=1
     else
         say "Starting server (first start generates the world, this can take a minute)"
-        systemctl start "$SERVICE"
+        "$TOOL" start >/dev/null || start_failed=1
     fi
-    ok=0
-    for _ in $(seq 1 240); do
-        log=$(journalctl -u "$SERVICE" --since "@$cur" -o cat --no-pager -q 2>/dev/null || true)
-        if grep -q 'Done (' <<< "$log"; then ok=1; break; fi
-        if grep -q -e 'FAILED TO BIND' -e 'Exception' <<< "$log" || ! systemctl is-active --quiet "$SERVICE"; then break; fi
-        sleep 0.5
-    done
-    if [ $ok -eq 1 ]; then
-        say "Server is up"
-    else
-        warn "the server didn't report ready in time - check: mcserver logs"
-    fi
+    [ $start_failed -eq 1 ] || say "Server is up"
 fi
 
 port=$(awk -F= '$1 == "server-port" {print $2}' "$DIR/server.properties"); port=${port:-25565}
@@ -762,7 +874,7 @@ cat <<EOF
     Heap:        $XMS - $XMX
 
   Try:  mcserver status | mcserver list | mcserver op <name> | mcserver console
-        mcserver backup | mcserver prop white-list true | mcserver help
+        mcserver backup | mcserver whitelist on | mcserver help
 
 EOF
 if [ "$(awk -F= '$1 == "online-mode" {print $2}' "$DIR/server.properties")" != true ]; then
@@ -773,4 +885,7 @@ fi
 if command -v ufw >/dev/null 2>&1 && grep -q 'Status: active' <<< "$(ufw status 2>/dev/null)"; then
     echo "  ufw is active - open the port with: ufw allow $port/tcp"
     echo
+fi
+if [ $start_failed -eq 1 ]; then
+    die "installed, but the server did not start (see the error above and: mcserver logs)"
 fi
